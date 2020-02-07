@@ -1,17 +1,15 @@
 ﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
-using System.Collections;
-using System.Collections.Generic;
+using System;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Net;
-using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.WebJobs.Host.Scale;
-using Microsoft.Azure.WebJobs.Script.Description;
 using Microsoft.Azure.WebJobs.Script.ExtensionBundle;
 using Microsoft.Azure.WebJobs.Script.Scale;
 using Microsoft.Azure.WebJobs.Script.WebHost.Controllers;
@@ -33,6 +31,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
         private readonly Mock<IEnvironment> _mockEnvironment;
         private readonly Mock<IFunctionsSyncManager> _functionsSyncManager;
         private readonly Mock<IExtensionBundleManager> _extensionBundleManager;
+        private readonly Mock<HostPerformanceManager> _mockHostPerformanceManager;
 
         public HostControllerTests()
         {
@@ -52,7 +51,11 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             _functionsSyncManager = new Mock<IFunctionsSyncManager>(MockBehavior.Strict);
             _extensionBundleManager = new Mock<IExtensionBundleManager>(MockBehavior.Strict);
 
-            _hostController = new HostController(optionsWrapper, hostOptions, loggerFactory, mockAuthorizationService.Object, mockWebFunctionsManager.Object, _mockEnvironment.Object, _mockScriptHostManager.Object, _functionsSyncManager.Object);
+            var mockServiceProvider = new Mock<IServiceProvider>(MockBehavior.Strict);
+            var healthMonitorOptions = new HostHealthMonitorOptions();
+            var wrappedHealthMonitorOptions = new OptionsWrapper<HostHealthMonitorOptions>(healthMonitorOptions);
+            _mockHostPerformanceManager = new Mock<HostPerformanceManager>(_mockEnvironment.Object, wrappedHealthMonitorOptions, mockServiceProvider.Object);
+            _hostController = new HostController(optionsWrapper, hostOptions, loggerFactory, mockAuthorizationService.Object, mockWebFunctionsManager.Object, _mockEnvironment.Object, _mockScriptHostManager.Object, _functionsSyncManager.Object, _mockHostPerformanceManager.Object);
 
             _appOfflineFilePath = Path.Combine(_scriptPath, ScriptConstants.AppOfflineFileName);
             if (File.Exists(_appOfflineFilePath))
@@ -128,6 +131,28 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             var result = (BadRequestObjectResult)(await _hostController.GetScaleStatus(context, scaleManagerMock.Object));
             Assert.Equal(HttpStatusCode.BadRequest, (HttpStatusCode)result.StatusCode);
             Assert.Equal("Runtime scale monitoring is not enabled.", result.Value);
+        }
+
+        [Fact]
+        public async Task Ping_HttpScalePing_ReturnsExpectedResult()
+        {
+            var httpContext = new DefaultHttpContext();
+            httpContext.Request.Host = new HostString("local");
+            httpContext.Request.Path = "/admin/host/ping";
+            httpContext.Request.Method = "Post";
+            httpContext.Request.IsHttps = true;
+            httpContext.Request.Headers.Add("User-Agent", ScriptConstants.HttpScaleUserAgent);
+            _hostController.ControllerContext.HttpContext = httpContext;
+
+            bool underHighLoad = true;
+            _mockHostPerformanceManager.Setup(p => p.IsUnderHighLoad(It.IsAny<Collection<string>>(), It.IsAny<ILogger>())).ReturnsAsync(() => underHighLoad);
+
+            var result = (StatusCodeResult)(await _hostController.Ping(_mockScriptHostManager.Object));
+            Assert.Equal((int)HttpStatusCode.TooManyRequests, result.StatusCode);
+
+            underHighLoad = false;
+            result = (StatusCodeResult)(await _hostController.Ping(_mockScriptHostManager.Object));
+            Assert.Equal((int)HttpStatusCode.OK, result.StatusCode);
         }
     }
 }

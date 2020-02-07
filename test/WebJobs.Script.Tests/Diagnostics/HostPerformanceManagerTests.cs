@@ -1,8 +1,10 @@
 ﻿// Copyright (c) .NET Foundation. All rights reserved.
 // Licensed under the MIT License. See License.txt in the project root for license information.
 
+using System;
 using System.Collections.ObjectModel;
 using System.Linq;
+using Autofac.Core;
 using Microsoft.Azure.WebJobs.Script.Scale;
 using Microsoft.Extensions.Options;
 using Moq;
@@ -18,9 +20,12 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
             var mockEnvironment = new Mock<IEnvironment>(MockBehavior.Strict);
             string value = string.Empty;
             var logger = new TestLogger("Test");
+            mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.AzureWebsiteSku)).Returns(ScriptConstants.DynamicSku);
+            mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.RoleInstanceId)).Returns((string)null);
             mockEnvironment.Setup(p => p.GetEnvironmentVariable(EnvironmentSettingNames.AzureWebsiteAppCountersName)).Returns(() => value);
             var options = new HostHealthMonitorOptions();
-            var performanceManager = new HostPerformanceManager(mockEnvironment.Object, new OptionsWrapper<HostHealthMonitorOptions>(options));
+            var serviceProviderMock = new Mock<IServiceProvider>(MockBehavior.Strict);
+            var performanceManager = new HostPerformanceManager(mockEnvironment.Object, new OptionsWrapper<HostHealthMonitorOptions>(options), serviceProviderMock.Object);
 
             value = "{\"userTime\": 30000000,\"kernelTime\": 16562500,\"pageFaults\": 131522,\"processes\": 1,\"processLimit\": 32,\"threads\": 32,\"threadLimit\": 512,\"connections\": 4,\"connectionLimit\": 300,\"activeConnections\": 25,\"activeConnectionLimit\": 600,\"sections\": 3,\"sectionLimit\": 256,\"namedPipes\": 0,\"namedPipeLimit\": 128,\"remoteDirMonitors\": 5,\"remoteDirMonitorLimit\": 500,\"readIoOperations\": 675,\"writeIoOperations\": 18,\"otherIoOperations\": 9721,\"readIoBytes\": 72585119,\"writeIoBytes\": 5446,\"otherIoBytes\": 393926,\"privateBytes\": 33759232,\"handles\": 987,\"contextSwitches\": 15535,\"remoteOpens\": 250}";
             var counters = performanceManager.GetPerformanceCounters(logger);
@@ -63,7 +68,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
         [InlineData(290, true)]
         [InlineData(300, true)]
         [InlineData(310, true)]
-        public void IsUnderHighLoad_Connections_ReturnsExpectedResults(int currentValue, bool expected)
+        public void PerformanceCounterThresholdsExceeded_Connections_ReturnsExpectedResults(int currentValue, bool expected)
         {
             var counters = new ApplicationPerformanceCounters
             {
@@ -71,7 +76,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
                 ConnectionLimit = 300
             };
             Collection<string> exceededCounters = new Collection<string>();
-            Assert.Equal(expected, HostPerformanceManager.IsUnderHighLoad(counters, exceededCounters: exceededCounters));
+            Assert.Equal(expected, HostPerformanceManager.PerformanceCounterThresholdsExceeded(counters, exceededCounters: exceededCounters));
             if (expected)
             {
                 Assert.Equal(1, exceededCounters.Count);
@@ -87,7 +92,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
         [InlineData(500, true)]
         [InlineData(600, true)]
         [InlineData(610, true)]
-        public void IsUnderHighLoad_ActiveConnections_ReturnsExpectedResults(int currentValue, bool expected)
+        public void PerformanceCounterThresholdsExceeded_ActiveConnections_ReturnsExpectedResults(int currentValue, bool expected)
         {
             var counters = new ApplicationPerformanceCounters
             {
@@ -95,7 +100,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
                 ActiveConnectionLimit = 600
             };
             Collection<string> exceededCounters = new Collection<string>();
-            Assert.Equal(expected, HostPerformanceManager.IsUnderHighLoad(counters, exceededCounters: exceededCounters));
+            Assert.Equal(expected, HostPerformanceManager.PerformanceCounterThresholdsExceeded(counters, exceededCounters: exceededCounters));
             if (expected)
             {
                 Assert.Equal(1, exceededCounters.Count);
@@ -110,7 +115,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
         [InlineData(401, true)]
         [InlineData(500, true)]
         [InlineData(600, true)]
-        public void IsUnderHighLoad_RemoteDirMonitors_ReturnsExpectedResults(int currentValue, bool expected)
+        public void PerformanceCounterThresholdsExceeded_RemoteDirMonitors_ReturnsExpectedResults(int currentValue, bool expected)
         {
             var counters = new ApplicationPerformanceCounters
             {
@@ -118,7 +123,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
                 RemoteDirMonitorLimit = 500
             };
             Collection<string> exceededCounters = new Collection<string>();
-            Assert.Equal(expected, HostPerformanceManager.IsUnderHighLoad(counters, exceededCounters: exceededCounters));
+            Assert.Equal(expected, HostPerformanceManager.PerformanceCounterThresholdsExceeded(counters, exceededCounters: exceededCounters));
             if (expected)
             {
                 Assert.Equal(1, exceededCounters.Count);
@@ -134,7 +139,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
         [InlineData(500, true)]
         [InlineData(512, true)]
         [InlineData(513, true)]
-        public void IsUnderHighLoad_Threads_ReturnsExpectedResults(int currentValue, bool expected)
+        public void PerformanceCounterThresholdsExceeded_Threads_ReturnsExpectedResults(int currentValue, bool expected)
         {
             var counters = new ApplicationPerformanceCounters
             {
@@ -142,7 +147,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
                 ThreadLimit = 512
             };
             Collection<string> exceededCounters = new Collection<string>();
-            Assert.Equal(expected, HostPerformanceManager.IsUnderHighLoad(counters, exceededCounters: exceededCounters));
+            Assert.Equal(expected, HostPerformanceManager.PerformanceCounterThresholdsExceeded(counters, exceededCounters: exceededCounters));
             if (expected)
             {
                 Assert.Equal(1, exceededCounters.Count);
@@ -158,7 +163,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
         [InlineData(30, true)]
         [InlineData(32, true)]
         [InlineData(33, true)]
-        public void IsUnderHighLoad_Processes_ReturnsExpectedResults(int currentValue, bool expected)
+        public void PerformanceCounterThresholdsExceeded_Processes_ReturnsExpectedResults(int currentValue, bool expected)
         {
             var counters = new ApplicationPerformanceCounters
             {
@@ -166,7 +171,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
                 ProcessLimit = 32
             };
             Collection<string> exceededCounters = new Collection<string>();
-            Assert.Equal(expected, HostPerformanceManager.IsUnderHighLoad(counters, exceededCounters: exceededCounters));
+            Assert.Equal(expected, HostPerformanceManager.PerformanceCounterThresholdsExceeded(counters, exceededCounters: exceededCounters));
             if (expected)
             {
                 Assert.Equal(1, exceededCounters.Count);
@@ -182,7 +187,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
         [InlineData(120, true)]
         [InlineData(128, true)]
         [InlineData(129, true)]
-        public void IsUnderHighLoad_NamedPipes_ReturnsExpectedResults(int currentValue, bool expected)
+        public void PerformanceCounterThresholdsExceeded_NamedPipes_ReturnsExpectedResults(int currentValue, bool expected)
         {
             var counters = new ApplicationPerformanceCounters
             {
@@ -190,7 +195,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
                 NamedPipeLimit = 128
             };
             Collection<string> exceededCounters = new Collection<string>();
-            Assert.Equal(expected, HostPerformanceManager.IsUnderHighLoad(counters, exceededCounters: exceededCounters));
+            Assert.Equal(expected, HostPerformanceManager.PerformanceCounterThresholdsExceeded(counters, exceededCounters: exceededCounters));
             if (expected)
             {
                 Assert.Equal(1, exceededCounters.Count);
@@ -199,7 +204,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
         }
 
         [Fact]
-        public void IsUnderHighLoad_MultipleExceededThrottles_ReturnsExpectedResults()
+        public void PerformanceCounterThresholdsExceeded_MultipleExceededThrottles_ReturnsExpectedResults()
         {
             var counters = new ApplicationPerformanceCounters
             {
@@ -211,7 +216,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests.Diagnostics
                 ThreadLimit = 512
             };
             Collection<string> exceededCounters = new Collection<string>();
-            Assert.Equal(true, HostPerformanceManager.IsUnderHighLoad(counters, exceededCounters));
+            Assert.Equal(true, HostPerformanceManager.PerformanceCounterThresholdsExceeded(counters, exceededCounters));
             Assert.Equal(3, exceededCounters.Count);
             Assert.Equal("Threads, Processes, NamedPipes", string.Join(", ", exceededCounters));
         }

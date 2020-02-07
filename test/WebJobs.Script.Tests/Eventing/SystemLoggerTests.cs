@@ -3,7 +3,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Microsoft.Azure.WebJobs.Logging;
+using Microsoft.Azure.WebJobs.Script.WebHost;
 using Microsoft.Azure.WebJobs.Script.WebHost.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Moq;
@@ -13,6 +15,7 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
 {
     public class SystemLoggerTests
     {
+        private const int TestFlushIntervalMS = 50;
         private readonly SystemLogger _logger;
         private readonly Mock<IEventGenerator> _mockEventGenerator;
         private readonly string _websiteName;
@@ -42,11 +45,12 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             _category = LogCategories.CreateFunctionCategory(_functionName);
             _debugStateProvider = new Mock<IDebugStateProvider>(MockBehavior.Strict);
             _debugStateProvider.Setup(p => p.InDiagnosticMode).Returns(() => _inDiagnosticMode);
-            _logger = new SystemLogger(_hostInstanceId, _category, _mockEventGenerator.Object, _environment, _debugStateProvider.Object, null, new LoggerExternalScopeProvider());
+            var standbyOptions = new TestOptionsMonitor<StandbyOptions>(new StandbyOptions());
+            _logger = new SystemLogger(_hostInstanceId, _category, _mockEventGenerator.Object, _environment, _debugStateProvider.Object, null, new LoggerExternalScopeProvider(), standbyOptions, flushIntervalMS: TestFlushIntervalMS);
         }
 
         [Fact]
-        public void Log_Trace_LogsOnlyWhenInDebugMode()
+        public async Task Log_Trace_LogsOnlyWhenInDebugMode()
         {
             string eventName = string.Empty;
             string details = string.Empty;
@@ -62,11 +66,13 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             _mockEventGenerator.Setup(p => p.LogFunctionTraceEvent(LogLevel.Trace, _subscriptionId, _websiteName, _functionName, eventName, _category, details, summary, string.Empty, string.Empty, functionInvocationId, _hostInstanceId, activityId, runtimeSiteName, slotName));
             _logger.LogTrace(summary);
 
+            await Task.Delay(TestFlushIntervalMS);
+
             _mockEventGenerator.VerifyAll();
         }
 
         [Fact]
-        public void Log_Verbose_EmitsExpectedEvent()
+        public async Task Log_Verbose_EmitsExpectedEvent()
         {
             string eventName = string.Empty;
             string details = string.Empty;
@@ -80,11 +86,13 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
 
             _logger.LogDebug(summary);
 
+            await Task.Delay(TestFlushIntervalMS);
+
             _mockEventGenerator.VerifyAll();
         }
 
         [Fact]
-        public void Log_Verbose_LogData_EmitsExpectedEvent()
+        public async Task Log_Verbose_LogData_EmitsExpectedEvent()
         {
             string eventName = string.Empty;
             string details = string.Empty;
@@ -110,11 +118,13 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
                 _logger.Log(LogLevel.Debug, 0, logData, null, (state, ex) => message);
             }
 
+            await Task.Delay(TestFlushIntervalMS);
+
             _mockEventGenerator.VerifyAll();
         }
 
         [Fact]
-        public void Log_Error_EmitsExpectedEvent()
+        public async Task Log_Error_EmitsExpectedEvent()
         {
             string eventName = string.Empty;
             string message = "TestMessage";
@@ -129,11 +139,13 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
 
             _logger.LogError(ex, message);
 
+            await Task.Delay(TestFlushIntervalMS);
+
             _mockEventGenerator.VerifyAll();
         }
 
         [Fact]
-        public void Log_Sanitizes()
+        public async Task Log_Sanitization()
         {
             string secretReplacement = "[Hidden Credential]";
             string secretString = "{ \"AzureWebJobsStorage\": \"DefaultEndpointsProtocol=https;AccountName=testAccount1;AccountKey=mykey1;EndpointSuffix=core.windows.net\", \"AnotherKey\": \"AnotherValue\" }";
@@ -149,11 +161,14 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
             string runtimeSiteName = string.Empty;
             string slotName = string.Empty;
 
-            Exception ex = new InvalidOperationException(secretException);
+            Exception ex = new InvalidOperationException(Sanitizer.Sanitize(secretException));
 
             _mockEventGenerator.Setup(p => p.LogFunctionTraceEvent(LogLevel.Error, _subscriptionId, _websiteName, _functionName, eventName, _category, sanitizedDetails, sanitizedString, ex.GetType().ToString(), sanitizedExceptionMessage, functionInvocationId, _hostInstanceId, activityId, runtimeSiteName, slotName));
 
-            _logger.LogError(ex, secretString);
+            // it's the caller's responsibility to presanitize any details in the log entries
+            _logger.LogError(ex, Sanitizer.Sanitize(secretString));
+
+            await Task.Delay(TestFlushIntervalMS);
 
             _mockEventGenerator.VerifyAll();
         }
@@ -162,7 +177,8 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
         public void Log_Ignores_FunctionUserCategory()
         {
             // Create a logger with the Function.{FunctionName}.User category, which is what determines user logs.
-            ILogger logger = new SystemLogger(Guid.NewGuid().ToString(), LogCategories.CreateFunctionUserCategory(_functionName), _mockEventGenerator.Object, new TestEnvironment(), _debugStateProvider.Object, null, new LoggerExternalScopeProvider());
+            var standbyOptions = new TestOptionsMonitor<StandbyOptions>(new StandbyOptions());
+            ILogger logger = new SystemLogger(Guid.NewGuid().ToString(), LogCategories.CreateFunctionUserCategory(_functionName), _mockEventGenerator.Object, new TestEnvironment(), _debugStateProvider.Object, null, new LoggerExternalScopeProvider(), standbyOptions);
             logger.LogDebug("TestMessage");
 
             // Make sure it's never been called.
@@ -211,7 +227,8 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
                 [key] = "TestFunction2"
             };
 
-            var logger = new SystemLogger(_hostInstanceId, "Not.A.Function", _mockEventGenerator.Object, _environment, _debugStateProvider.Object, null, new LoggerExternalScopeProvider());
+            var standbyOptions = new TestOptionsMonitor<StandbyOptions>(new StandbyOptions());
+            var logger = new SystemLogger(_hostInstanceId, "Not.A.Function", _mockEventGenerator.Object, _environment, _debugStateProvider.Object, null, new LoggerExternalScopeProvider(), standbyOptions);
 
             _mockEventGenerator.Setup(p => p.LogFunctionTraceEvent(LogLevel.Debug, It.IsAny<string>(), It.IsAny<string>(), "TestFunction2", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()));
             logger.Log(LogLevel.Debug, 0, logState, null, (s, e) => "TestMessage");
@@ -228,7 +245,8 @@ namespace Microsoft.Azure.WebJobs.Script.Tests
                 [key] = "TestFunction3"
             };
 
-            var logger = new SystemLogger(_hostInstanceId, "Not.A.Function", _mockEventGenerator.Object, _environment, _debugStateProvider.Object, null, new LoggerExternalScopeProvider());
+            var standbyOptions = new TestOptionsMonitor<StandbyOptions>(new StandbyOptions());
+            var logger = new SystemLogger(_hostInstanceId, "Not.A.Function", _mockEventGenerator.Object, _environment, _debugStateProvider.Object, null, new LoggerExternalScopeProvider(), standbyOptions);
 
             _mockEventGenerator.Setup(p => p.LogFunctionTraceEvent(LogLevel.Debug, It.IsAny<string>(), It.IsAny<string>(), "TestFunction3", It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()));
 
